@@ -1,0 +1,53 @@
+# GRPO-train Qwen/Qwen3.5-4B on Wordle, on a single cloud GPU via dstack.
+#
+#   dstack apply -f train.dstack.yml
+#
+# One node runs two processes: the Wordle OpenEnv server (CPU) in the
+# background, and GRPO training with vLLM colocate on the GPU. Everything is
+# local to the node, so there is no hosted-Space dependency.
+
+type: task
+name: wordle-grpo
+
+python: "3.12"
+nvcc: true # some deps build CUDA extensions
+
+env:
+  - MODEL=Qwen/Qwen3.5-4B
+  - HF_HUB_ENABLE_HF_TRANSFER=1
+  # Concurrency: uvicorn workers must cover the generation batch
+  # (per_device_train_batch_size * gradient_accumulation_steps).
+  - WORKERS=16
+  # - HF_TOKEN   # only for gated models; Qwen3.5-4B is public
+
+files:
+  - train_grpo.py
+  - wordle_env.py
+  - run_env_server.sh
+
+commands:
+  # Plain pip installs into the run's own env (default dstack image); list
+  # datasets/vllm explicitly rather than relying on trl's transitive deps.
+  - uv pip install "trl==1.7.0" vllm datasets accelerate peft trackio hf_transfer
+    "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle"
+  # 1. Wordle OpenEnv server in the background.
+  - bash run_env_server.sh &
+  # 2. Wait until the server accepts connections (any HTTP reply = up).
+  - |
+    for i in $(seq 1 60); do
+      curl -s -o /dev/null http://0.0.0.0:8001/ && break
+      echo "waiting for env server ($i)..."; sleep 2
+    done
+  # 3. GRPO training (vLLM colocate, LoRA).
+  - python train_grpo.py
+    --model $MODEL
+    --env-url http://0.0.0.0:8001
+    --vllm-mode colocate
+    --group-size 8
+    --batch-size 64
+    --steps 20
+
+resources:
+  # 4B + LoRA + colocated vLLM fits one 48 GB card; 80 GB is comfortable.
+  gpu: 48GB..80GB:1
+  disk: 100GB

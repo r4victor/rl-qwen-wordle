@@ -4,5 +4,5 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "openai>=2.44.0",
-    "textarena>=0.7.4",
+    "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle",
 ]

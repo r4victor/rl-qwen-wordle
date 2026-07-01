@@ -2,12 +2,13 @@
 #
 #   dstack apply -f serve-vllm.dstack.yml
 #
-# `type: task` forwards the container's port 8000 to localhost:8000 while the
-# run is attached, so the smoke eval can hit it as a plain OpenAI endpoint:
+# Serves the base model for a baseline eval. `type: task` forwards port 8000 to
+# localhost while attached; run the env server + eval_wordle.py against it:
 #
-#   OPENAI_BASE_URL=http://localhost:8000/v1 OPENAI_API_KEY=EMPTY \
-#     MODEL=Qwen/Qwen3.5-4B ENABLE_THINKING=false NUM_GAMES=20 \
-#     uv run python smoke_eval.py
+#   bash run_env_server.sh &
+#   uv run eval_wordle.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.5-4B -n 50
+#
+# (For a trained adapter, serve with --enable-lora instead; see README §2.)
 #
 
 type: task
@@ -28,6 +29,7 @@ commands:
     --host 0.0.0.0 --port 8000
     --max-model-len 8192
     --gpu-memory-utilization 0.90
+    --enable-auto-tool-choice --tool-call-parser hermes
 
 resources:
   # 4B in bf16 (~9.3 GB weights) + KV cache fits comfortably on one 24 GB+ card.

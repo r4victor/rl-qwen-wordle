@@ -1,72 +1,54 @@
-# rl-qwen-wordle — OSS Wordle eval/RL
+# rl-qwen-wordle
 
-An example of LLM eval and RL training on a Wordle game from [TextArena](https://github.com/TextArena/TextArena).
+A small, self-contained example of **RL-training and evaluating** an LLM
+(Qwen3.5-4B) to play Wordle, using open-source tools on a single GPU:
 
-## Setup
+- **Env:** [TextArena](https://github.com/TextArena/TextArena) Wordle, served over [OpenEnv](https://github.com/meta-pytorch/OpenEnv)
+- **Trainer:** [TRL](https://github.com/huggingface/trl) GRPO (multi-turn, tool-calling)
+- **GPU:** provisioned with [dstack](https://github.com/dstackai/dstack)
 
-```bash
-uv sync
-```
+Inspired by Prime Intellect's hosted-training example, but does not depend on it.
 
-## 1. Smoke eval
+## Files
 
-`smoke_eval.py` plays `NUM_EXAMPLES x ROLLOUTS_PER_EXAMPLE` Wordle games and
-reports solve rate / mean reward / mean turns / invalid-move rate. It's
-endpoint-agnostic — configured via env vars.
+| File | What it is |
+|------|-----------|
+| `wordle_env.py` | The shared format — system prompt + `guess` tool + reward. Imported by **both** training and eval, so they measure the same thing. |
+| `train_grpo.py` | GRPO training with TRL. |
+| `eval_wordle.py` | Eval — plays Wordle in the same tool-calling format. |
+| `run_env_server.sh` | Starts the Wordle OpenEnv server. |
+| `train.dstack.yml` | Runs training on a GPU. |
+| `serve-vllm.dstack.yml` | Serves a model on a GPU (for eval). |
 
-**Eval sizing vs training knobs.** A *game* = one full Wordle episode (= a
-*rollout*); an *example* = one seed / secret word. `ROLLOUTS_PER_EXAMPLE`
-replays the same word to measure policy variance — the eval analog of
-`prime eval run -r` and of RL's `rollouts_per_example`. There is deliberately
-**no `batch_size` or `max_steps`** here: those only mean something once you're
-computing gradient updates, so they belong to the trainer in step 2, not eval.
-
-Everything is a CLI flag (`python smoke_eval.py --help`). Only `--base-url` and
-`--api-key` default from the standard `OPENAI_BASE_URL` / `OPENAI_API_KEY` env
-vars, so the key stays out of shell history.
-
-### Option A — OpenRouter (no GPU, quickest harness check)
+## Train
 
 ```bash
-OPENAI_API_KEY=$OPENROUTER_API_KEY \
-uv run python smoke_eval.py \
-  --base-url https://openrouter.ai/api/v1 \
-  --model qwen/qwen3.5-4b \
-  -n 20
+dstack apply -f train.dstack.yml
 ```
 
-### Option B — self-hosted vLLM on a dstack GPU (the real target model)
+Runs the OpenEnv server + GRPO training (vLLM colocate, LoRA) on one GPU. Main
+knobs: `--group-size 8` (completions per prompt), `--batch-size 16`,
+`--steps 10`. Watch **reward** climb via `dstack logs wordle-grpo`. The trained
+LoRA adapter is saved to `outputs/<model>-wordle-GRPO/`.
 
-Bring up the endpoint (forwards to `localhost:8000` while attached):
+## Eval
+
+Serve the model (tool-calling enabled) and the env server, then run the eval:
 
 ```bash
-dstack apply -f serve-vllm.dstack.yml
+vllm serve Qwen/Qwen3.5-4B --port 8000 \
+  --enable-auto-tool-choice --tool-call-parser hermes \
+  --enable-lora --lora-modules wordle=outputs/Qwen3.5-4B-wordle-GRPO --max-lora-rank 16 &
+bash run_env_server.sh &
+
+uv run eval_wordle.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.5-4B -n 50  # baseline
+uv run eval_wordle.py --base-url http://localhost:8000/v1 --model wordle          -n 50  # trained
 ```
 
-Then, in another shell:
+Solve rate / mean reward print to the console and are saved to `logs/` (git-ignored).
 
-```bash
-uv run python smoke_eval.py \
-  --base-url http://localhost:8000/v1 --api-key EMPTY \
-  --model Qwen/Qwen3.5-4B --no-enable-thinking \
-  -n 20 -r 1
-```
+## Notes
 
-### Flags
-
-`--model`, `--base-url`, `--api-key`, `-n/--num-examples`,
-`-r/--rollouts-per-example`, `--env-id` (`Wordle-v0` / `-hardcore` / `-long`),
-`--max-tokens`, `--temperature`, `--concurrency`,
-`--enable-thinking/--no-enable-thinking`, `--log-dir`.
-
-## 2. RL training (next step)
-
-Once the eval baseline looks sane, train with GRPO on the same env. Both stay
-fully OSS and run on a dstack GPU:
-
-- **TRL + OpenEnv** — HF-native; TextArena Wordle exposes reset/step, TRL's
-  `GRPOTrainer` drives the multi-turn rollout.
-- **prime-rl** — self-managed trainer, same `[[env]]` TOML shape as before.
-
-Reward is already RL-ready: `1.0` on solve, shaped in `[0, 1)` otherwise
-(fraction of the word revealed).
+- **Reward:** `1.0` on a win, else `(greens + ½·yellows) / 5` of the last guess (TextArena's own signal).
+- **LoRA** is on by default so 4B + vLLM fit one GPU; pass `--no-lora` for full fine-tuning on a bigger box.
+- vLLM must be started with `--enable-auto-tool-choice --tool-call-parser hermes` for the tool-calling eval.
