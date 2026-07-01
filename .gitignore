@@ -1,0 +1,7 @@
+# Python / uv
+__pycache__/
+*.pyc
+.venv/
+
+# Eval run logs
+logs/

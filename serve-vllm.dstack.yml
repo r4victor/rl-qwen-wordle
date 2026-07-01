@@ -1,0 +1,35 @@
+# Serve Qwen/Qwen3.5-4B with vLLM on a cloud GPU via dstack.
+#
+#   dstack apply -f serve-vllm.dstack.yml
+#
+# `type: task` forwards the container's port 8000 to localhost:8000 while the
+# run is attached, so the smoke eval can hit it as a plain OpenAI endpoint:
+#
+#   OPENAI_BASE_URL=http://localhost:8000/v1 OPENAI_API_KEY=EMPTY \
+#     MODEL=Qwen/Qwen3.5-4B ENABLE_THINKING=false NUM_GAMES=20 \
+#     uv run python smoke_eval.py
+#
+
+type: task
+name: vllm-qwen35-4b
+
+image: vllm/vllm-openai:latest
+
+env:
+  - MODEL=Qwen/Qwen3.5-4B
+  # - HF_TOKEN   # only needed for gated models; Qwen3.5-4B is public
+
+ports:
+  - 8000
+
+commands:
+  - >
+    vllm serve $MODEL
+    --host 0.0.0.0 --port 8000
+    --max-model-len 8192
+    --gpu-memory-utilization 0.90
+
+resources:
+  # 4B in bf16 (~9.3 GB weights) + KV cache fits comfortably on one 24 GB+ card.
+  gpu: 24GB..48GB:1
+  disk: 60GB
