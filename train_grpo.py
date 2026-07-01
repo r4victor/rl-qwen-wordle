@@ -59,6 +59,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--enable-thinking", default=False, action=argparse.BooleanOptionalAction)
     p.add_argument("--output-dir", default=None)
     p.add_argument("--report-to", default="none", choices=("none", "trackio", "wandb"))
+    p.add_argument("--push-to-hub", default=None, metavar="REPO_ID",
+                   help="after training, push the adapter to this HF repo (needs HF_TOKEN)")
     return p.parse_args()
 
 
@@ -125,6 +127,7 @@ def main() -> None:
         num_completions_to_print=2,
         logging_steps=1,
         report_to=args.report_to,
+        hub_model_id=args.push_to_hub,
     )
 
     trainer = GRPOTrainer(
@@ -138,6 +141,8 @@ def main() -> None:
     )
     trainer.train()
     trainer.save_model(output_dir)
+    if args.push_to_hub:
+        trainer.push_to_hub()  # uploads the adapter to hub_model_id
 
 
 if __name__ == "__main__":

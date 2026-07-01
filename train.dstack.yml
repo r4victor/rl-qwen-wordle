@@ -15,14 +15,17 @@ nvcc: true # some deps build CUDA extensions
 env:
   - MODEL=Qwen/Qwen3.5-4B
   - HF_HUB_ENABLE_HF_TRANSFER=1
-  # Concurrency: uvicorn workers must cover the generation batch
-  # (per_device_train_batch_size * gradient_accumulation_steps).
-  - WORKERS=16
-  # - HF_TOKEN   # only for gated models; Qwen3.5-4B is public
+  # Env-server concurrency must cover the generation batch (--batch-size below).
+  - MAX_CONCURRENT_ENVS=64
+  # Set HF_REPO (+ HF_TOKEN as a secret) to push the trained adapter to HF Hub,
+  # so it can be served in a separate run (see serve-vllm.dstack.yml).
+  - HF_REPO=r4victor/qwen-wordle
+  # - HF_TOKEN
 
 files:
   - train_grpo.py
   - wordle_env.py
+  - env_server.py
   - run_env_server.sh
 
 commands:
@@ -38,14 +41,11 @@ commands:
       curl -s -o /dev/null http://0.0.0.0:8001/ && break
       echo "waiting for env server ($i)..."; sleep 2
     done
-  # 3. GRPO training (vLLM colocate, LoRA).
-  - python train_grpo.py
-    --model $MODEL
-    --env-url http://0.0.0.0:8001
-    --vllm-mode colocate
-    --group-size 8
-    --batch-size 64
-    --steps 20
+  # 3. GRPO training (vLLM colocate, LoRA). Push the adapter if HF_REPO is set.
+  - |
+    [ -n "$HF_REPO" ] && PUSH="--push-to-hub $HF_REPO" || PUSH=""
+    python train_grpo.py --model $MODEL --env-url http://0.0.0.0:8001 \
+      --vllm-mode colocate --group-size 8 --batch-size 64 --steps 20 $PUSH
 
 resources:
   # 4B + LoRA + colocated vLLM fits one 48 GB card; 80 GB is comfortable.

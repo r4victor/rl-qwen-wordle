@@ -28,27 +28,32 @@ dstack apply -f train.dstack.yml
 
 Runs the OpenEnv server + GRPO training (vLLM colocate, LoRA) on one GPU. Main
 knobs: `--group-size 8` (completions per prompt), `--batch-size 16`,
-`--steps 10`. Watch **reward** climb via `dstack logs wordle-grpo`. The trained
-LoRA adapter is saved to `outputs/<model>-wordle-GRPO/`.
+`--steps 10`. Watch **reward** climb via `dstack logs wordle-grpo`.
 
-## Eval
+The adapter is saved to `outputs/` on the run — which is ephemeral. To keep it
+(and serve it in a separate run), **push it to HF Hub**: set `HF_REPO` and
+`HF_TOKEN` in `train.dstack.yml` and it uploads the adapter when training ends.
 
-Serve the model (tool-calling enabled) and the env server, then run the eval:
+## Serve & eval
+
+Serving runs separately from training. Serve the base model, or a trained
+adapter pulled from HF, with `serve-vllm.dstack.yml`:
 
 ```bash
-vllm serve Qwen/Qwen3.5-4B --port 8000 \
-  --enable-auto-tool-choice --tool-call-parser hermes \
-  --enable-lora --lora-modules wordle=outputs/Qwen3.5-4B-wordle-GRPO --max-lora-rank 16 &
-bash run_env_server.sh &
-
-uv run eval_wordle.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.5-4B -n 50  # baseline
-uv run eval_wordle.py --base-url http://localhost:8000/v1 --model wordle          -n 50  # trained
+dstack apply -f serve-vllm.dstack.yml                                    # base (baseline)
+ADAPTER=your-user/qwen35-4b-wordle dstack apply -f serve-vllm.dstack.yml # trained (from HF)
 ```
 
-Solve rate / mean reward print to the console and are saved to `logs/` (git-ignored).
+It forwards port 8000 to localhost. Start the env server and run the eval
+against it (`--model wordle` for a served adapter, else the base model id):
+
+```bash
+bash run_env_server.sh &
+uv run eval_wordle.py --base-url http://localhost:8000/v1 --model wordle -n 50
+```
 
 ## Notes
 
 - **Reward:** `1.0` on a win, else `(greens + ½·yellows) / 5` of the last guess (TextArena's own signal).
-- **LoRA** is on by default so 4B + vLLM fit one GPU; pass `--no-lora` for full fine-tuning on a bigger box.
-- vLLM must be started with `--enable-auto-tool-choice --tool-call-parser hermes` for the tool-calling eval.
+- **LoRA** is on by default so 4B + vLLM fit one GPU; pass `--no-lora` for full fine-tuning on a bigger box. LoRA pushes a small *adapter* (serve with `ADAPTER=<repo>`); `--no-lora` pushes a *full model* (serve with `MODEL=<repo>`, no adapter).
+- vLLM must be started with `--enable-auto-tool-choice --tool-call-parser qwen3_xml` for the tool-calling eval (Qwen3.5 uses XML-style tool calls; `hermes` fails to parse them).
