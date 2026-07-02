@@ -93,6 +93,14 @@ class WordleEnv:
             self.valid_guesses += 1
         self.reward = result.reward  # raw TextArena reward, same on both sides
         self.done = result.done
+        # TextArena returns only the echoed guess on a terminal move (no feedback
+        # or "you won" text), so the model can't tell it finished. Add an explicit
+        # outcome — reward == 1.0 is the game's own win signal (all-green).
+        if self.done:
+            if self.reward >= 1.0:
+                feedback += "\nFeedback:\nG G G G G\nCorrect! You solved it."
+            else:
+                feedback += "\nGame over — the word was not solved. Stop guessing."
         return feedback
 
     def _close(self) -> None:

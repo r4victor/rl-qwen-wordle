@@ -14,7 +14,7 @@ python: "3.12"
 
 env:
   - MODEL=Qwen/Qwen3.5-4B
-  - LORA=false # set to false for full fine-tuning (uses 8-bit Adam to fit 80GB)
+  - LORA=true # set to false for full fine-tuning (uses 8-bit Adam to fit 80GB)
   - HF_XET_HIGH_PERFORMANCE=1 # faster Hub transfers via the Xet backend
   # Env-server concurrency must cover the generation batch (--batch-size below).
   - MAX_CONCURRENT_ENVS=64
