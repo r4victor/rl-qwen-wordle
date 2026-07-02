@@ -8,8 +8,9 @@
 type: task
 name: wordle-grpo
 
+# dstack base image. We ignore its CUDA/nvcc — torch and vLLM wheels bundle their
+# own CUDA 12.9 runtime (the host driver just needs to support CUDA >=12.9).
 python: "3.12"
-nvcc: true # some deps build CUDA extensions
 
 env:
   - MODEL=Qwen/Qwen3.5-4B
@@ -29,9 +30,16 @@ files:
   - run_env_server.sh
 
 commands:
-  # Plain pip installs into the run's own env (default dstack image); list
-  # datasets/vllm explicitly rather than relying on trl's transitive deps.
-  - uv pip install "trl==1.7.0" vllm datasets accelerate peft trackio openai
+  # CUDA 12.9 everything (runs on the 13.0 driver via backward compat):
+  #  - the plain `vllm==0.23.0` PyPI wheel is CUDA-13 (needs libcudart.so.13); the
+  #    explicit +cu129 wheel is the CUDA-12.9 build that matches cu129 torch
+  #  - --torch-backend=cu129: cu129 torch (provides libcudart.so.12)
+  #  - vllm 0.23.0 is TRL 1.7.0's max; transformers>=5.6.0 has the `qwen3_5` arch
+  #  (x86_64 node assumed — swap to the aarch64 wheel on ARM)
+  - uv pip install --torch-backend=cu129
+    "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
+    "trl==1.7.0" "transformers>=5.6.0"
+    datasets accelerate peft trackio openai
     "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle"
   # 1. Wordle OpenEnv server in the background.
   - bash run_env_server.sh &

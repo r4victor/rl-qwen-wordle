@@ -17,7 +17,7 @@ image: vllm/vllm-openai:latest
 env:
   # MODEL = base for baseline / LoRA, OR the HF repo of a full (--no-lora) model.
   - MODEL=Qwen/Qwen3.5-4B
-  - ADAPTER=          # HF repo of a LoRA adapter (empty = serve MODEL as-is)
+  - ADAPTER= # HF repo of a LoRA adapter (empty = serve MODEL as-is)
   # - HF_TOKEN        # needed if the repo is private
 
 ports:
