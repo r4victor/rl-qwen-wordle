@@ -24,6 +24,7 @@ env:
   - HF_TOKEN
   - WANDB_API_KEY
   - WANDB_PROJECT=qwen-wordle-grpo
+  - CUDA_HOME=/usr/local/cuda # where the cuda-toolkit install lands (see commands)
 
 files:
   - train_grpo.py
@@ -33,6 +34,12 @@ files:
   - run_env_server.sh
 
 commands:
+  # Install the CUDA 12.9 toolkit (nvcc + headers). vLLM JIT-compiles kernels (on H100 during
+  # training too) and needs nvcc at /usr/local/cuda/bin. Match the cu129 stack.
+  - apt-get update
+  - apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-12-9
+  - ln -sf /usr/local/cuda-12.9 /usr/local/cuda
+  - export PATH=/usr/local/cuda/bin:$PATH
   # CUDA 12.9 everything (runs on the 13.0 driver via backward compat):
   #  - the plain `vllm==0.23.0` PyPI wheel is CUDA-13 (needs libcudart.so.13); the
   #    explicit +cu129 wheel is the CUDA-12.9 build that matches cu129 torch
