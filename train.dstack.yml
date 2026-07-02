@@ -14,6 +14,7 @@ python: "3.12"
 
 env:
   - MODEL=Qwen/Qwen3.5-4B
+  - LORA=true # set to false for full fine-tuning (uses 8-bit Adam to fit 80GB)
   - HF_XET_HIGH_PERFORMANCE=1 # faster Hub transfers via the Xet backend
   # Env-server concurrency must cover the generation batch (--batch-size below).
   - MAX_CONCURRENT_ENVS=64
@@ -48,7 +49,7 @@ commands:
   - uv pip install --torch-backend=cu129
     "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
     "trl==1.7.0" "transformers>=5.6.0"
-    datasets accelerate peft trackio openai wandb
+    datasets accelerate peft trackio openai wandb bitsandbytes
     "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle"
   # 1. Wordle OpenEnv server in the background.
   - bash run_env_server.sh &
@@ -58,29 +59,41 @@ commands:
       curl -s -o /dev/null http://0.0.0.0:8001/ && break
       echo "waiting for env server ($i)..."; sleep 2
     done
-  # 3. GRPO training (vLLM colocate, LoRA). Push the adapter if HF_REPO is set.
+  # 3. GRPO training (vLLM colocate). --no-lora when LORA=false. Push if HF_REPO set.
   - |
     [ -n "$HF_REPO" ] && PUSH="--push-to-hub $HF_REPO" || PUSH=""
+    [ "$LORA" = "false" ] && LORA_FLAG="--no-lora" || LORA_FLAG=""
     python train_grpo.py --model $MODEL --env-url http://0.0.0.0:8001 \
-      --vllm-mode colocate --group-size 8 --micro-batch-size 4 --batch-size 32 --steps 20 --report-to wandb $PUSH
-  # 4. Training freed the GPU — serve base + trained adapter (one vLLM serves
-  #    both) and eval baseline vs trained in the same tool-calling format.
+      --vllm-mode colocate --group-size 8 --micro-batch-size 4 --batch-size 32 --steps 20 \
+      $LORA_FLAG --report-to wandb $PUSH
+  # 4. Training freed the GPU — serve the model(s) and eval baseline vs trained.
+  #    LoRA: one server hosts base + adapter. Full FT: the checkpoint is a full
+  #    model, so serve base and trained separately.
   - |
-    ADAPTER_DIR="outputs/$(basename $MODEL)-wordle-GRPO"
-    # --enforce-eager: skip vLLM's compilation / CUDA-graph capture, which needs
-    # nvcc (absent on the base image — torch/vllm ship only the CUDA runtime).
-    vllm serve $MODEL --host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.90 \
-      --max-model-len 8192 --enforce-eager \
-      --enable-auto-tool-choice --tool-call-parser qwen3_xml \
-      --enable-lora --lora-modules wordle=$ADAPTER_DIR --max-lora-rank 16 > /tmp/vllm.log 2>&1 &
-    VLLM_PID=$!
-    for i in $(seq 1 120); do
-      curl -sf http://0.0.0.0:8000/health && break
-      kill -0 $VLLM_PID 2>/dev/null || { echo "vllm serve died:"; tail -40 /tmp/vllm.log; exit 1; }
-      echo "waiting for vllm ($i)..."; sleep 5
-    done
-    python eval_wordle.py --base-url http://localhost:8000/v1 --model $MODEL  -n 50  # baseline
-    python eval_wordle.py --base-url http://localhost:8000/v1 --model wordle -n 50  # trained
+    CKPT="outputs/$(basename $MODEL)-wordle-GRPO"
+    # --enforce-eager: skip CUDA-graph compile (fast startup for a short eval).
+    SERVE="--host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.90 --max-model-len 8192 --enforce-eager --enable-auto-tool-choice --tool-call-parser qwen3_xml"
+    wait_vllm () {
+      for i in $(seq 1 120); do
+        curl -sf http://0.0.0.0:8000/health && return 0
+        kill -0 "$1" 2>/dev/null || { echo "vllm serve died:"; tail -40 /tmp/vllm.log; return 1; }
+        echo "waiting for vllm ($i)..."; sleep 5
+      done
+      return 1
+    }
+    if [ "$LORA" = "false" ]; then
+      for M in "$MODEL" "$CKPT"; do    # baseline, then trained (both full models)
+        vllm serve "$M" $SERVE > /tmp/vllm.log 2>&1 & PID=$!
+        wait_vllm $PID || exit 1
+        python eval_wordle.py --base-url http://localhost:8000/v1 --model "$M" -n 50
+        kill $PID 2>/dev/null; wait $PID 2>/dev/null
+      done
+    else
+      vllm serve "$MODEL" $SERVE --enable-lora --lora-modules wordle="$CKPT" --max-lora-rank 16 > /tmp/vllm.log 2>&1 & PID=$!
+      wait_vllm $PID || exit 1
+      python eval_wordle.py --base-url http://localhost:8000/v1 --model "$MODEL" -n 50  # baseline
+      python eval_wordle.py --base-url http://localhost:8000/v1 --model wordle   -n 50  # trained
+    fi
 
 resources:
   # 4B + LoRA + colocated vLLM fits tightly one 48 GB card; 80 GB is comfortable.

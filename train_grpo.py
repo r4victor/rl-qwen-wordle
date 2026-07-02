@@ -94,6 +94,15 @@ def parse_args() -> argparse.Namespace:
         help="LoRA (default) fits 4B on one GPU; --no-lora for full fine-tune",
     )
     p.add_argument(
+        "--optim",
+        default=None,
+        help="HF optimizer. Default: adamw_torch for LoRA, adamw_bnb_8bit for "
+        "--no-lora (8-bit Adam states so full fine-tuning fits one 80GB GPU).",
+    )
+    p.add_argument(
+        "--lora-rank", type=int, default=16, help="LoRA rank (r); ignored with --no-lora"
+    )
+    p.add_argument(
         "--enable-thinking", default=False, action=argparse.BooleanOptionalAction
     )
     p.add_argument("--output-dir", default=None)
@@ -158,12 +167,17 @@ def main() -> None:
     peft_config = None
     if args.lora:
         peft_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
+            r=args.lora_rank,
+            lora_alpha=2 * args.lora_rank,
             lora_dropout=0.05,
             target_modules="all-linear",
             task_type="CAUSAL_LM",
         )
+
+    # LoRA's optimizer state is tiny (plain Adam is fine); full fine-tuning's is
+    # huge, so default to 8-bit Adam so a 4B full FT fits one 80GB GPU. Overridable.
+    optim = args.optim or ("adamw_torch" if args.lora else "adamw_bnb_8bit")
+    print(f"[mode] {'LoRA r=%d' % args.lora_rank if args.lora else 'full fine-tune'}  optim={optim}")
 
     config = GRPOConfig(
         output_dir=output_dir,
@@ -179,6 +193,7 @@ def main() -> None:
         gradient_accumulation_steps=grad_accum,
         max_steps=args.steps,
         learning_rate=args.learning_rate,
+        optim=optim,
         max_completion_length=args.max_completion_length,
         chat_template_kwargs={"enable_thinking": args.enable_thinking},
         # Trade compute for memory — cuts activation memory (helps fit on one GPU).
