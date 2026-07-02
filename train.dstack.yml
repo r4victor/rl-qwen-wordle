@@ -22,6 +22,8 @@ env:
   # so it can be served in a separate run (see serve-vllm.dstack.yml).
   - HF_REPO
   - HF_TOKEN
+  - WANDB_API_KEY
+  - WANDB_PROJECT=qwen-wordle-grpo
 
 files:
   - train_grpo.py
@@ -36,13 +38,10 @@ commands:
   #    explicit +cu129 wheel is the CUDA-12.9 build that matches cu129 torch
   #  - --torch-backend=cu129: cu129 torch (provides libcudart.so.12)
   #  - vllm 0.23.0 is TRL 1.7.0's max; transformers>=5.6.0 has the `qwen3_5` arch
-  #  (x86_64 node assumed — swap to the aarch64 wheel on ARM)
-  # flash-linear-attention gives Qwen3.5's GDN layers an efficient (Triton) path;
-  # without it transformers falls back to a memory-hungry torch implementation.
   - uv pip install --torch-backend=cu129
     "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
-    "trl==1.7.0" "transformers>=5.6.0" flash-linear-attention
-    datasets accelerate peft trackio openai
+    "trl==1.7.0" "transformers>=5.6.0"
+    datasets accelerate peft trackio openai wandb
     "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle"
   # 1. Wordle OpenEnv server in the background.
   - bash run_env_server.sh &
@@ -56,17 +55,21 @@ commands:
   - |
     [ -n "$HF_REPO" ] && PUSH="--push-to-hub $HF_REPO" || PUSH=""
     python train_grpo.py --model $MODEL --env-url http://0.0.0.0:8001 \
-      --vllm-mode colocate --group-size 8 --micro-batch-size 4 --batch-size 32 --steps 3 $PUSH
+      --vllm-mode colocate --group-size 8 --micro-batch-size 4 --batch-size 32 --steps 20 --report-to wandb $PUSH
   # 4. Training freed the GPU — serve base + trained adapter (one vLLM serves
   #    both) and eval baseline vs trained in the same tool-calling format.
   - |
     ADAPTER_DIR="outputs/$(basename $MODEL)-wordle-GRPO"
+    # --enforce-eager: skip vLLM's compilation / CUDA-graph capture, which needs
+    # nvcc (absent on the base image — torch/vllm ship only the CUDA runtime).
     vllm serve $MODEL --host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.90 \
-      --max-model-len 8192 \
+      --max-model-len 8192 --enforce-eager \
       --enable-auto-tool-choice --tool-call-parser qwen3_xml \
       --enable-lora --lora-modules wordle=$ADAPTER_DIR --max-lora-rank 16 > /tmp/vllm.log 2>&1 &
+    VLLM_PID=$!
     for i in $(seq 1 120); do
       curl -sf http://0.0.0.0:8000/health && break
+      kill -0 $VLLM_PID 2>/dev/null || { echo "vllm serve died:"; tail -40 /tmp/vllm.log; exit 1; }
       echo "waiting for vllm ($i)..."; sleep 5
     done
     python eval_wordle.py --base-url http://localhost:8000/v1 --model $MODEL  -n 50  # baseline

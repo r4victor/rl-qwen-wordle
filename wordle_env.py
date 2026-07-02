@@ -8,6 +8,7 @@ eval calls `play_episode()`. Both use the same prompt, tool, and reward.
 import asyncio
 import json
 import os
+import threading
 
 from textarena_env import TextArenaAction, TextArenaEnv
 
@@ -41,19 +42,26 @@ class WordleEnv:
     """OpenEnv-backed Wordle env, per TRL's environment_factory contract:
     a no-arg __init__, reset(), and one tool method (guess).
 
-    The OpenEnv client is async (websocket), so we drive it on a per-instance
-    event loop and expose sync methods. The loop is persistent so the session
-    established in reset() stays valid across guess() calls.
+    The OpenEnv client is async (websocket). We run a dedicated event loop in a
+    background thread so the loop keeps running *between* reset/guess calls —
+    otherwise the connection's keepalive can't answer pings during (slow)
+    generation and the server drops the session with a 1011 ping timeout.
     """
 
     def __init__(self):
         self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
         self.client = TextArenaEnv(base_url=_ENV_URL)
+
+    def _run(self, coro):
+        # Submit a coroutine to the always-running background loop and block for it.
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
     def reset(self, seed: int | None = None, **kwargs) -> str | None:
         # seed pins the secret word — TRL passes the dataset's `seed` column here,
         # so all rollouts in a GRPO group (same row) get the same word.
-        result = self._loop.run_until_complete(self.client.reset(seed=seed))
+        result = self._run(self.client.reset(seed=seed))
         self._last_full_feedback = result.observation.messages[0].content
         self.reward = 0.0
         self.done = False
@@ -71,9 +79,7 @@ class WordleEnv:
         """
         if self.done:
             raise ValueError("Game over.")
-        result = self._loop.run_until_complete(
-            self.client.step(TextArenaAction(message=guess))
-        )
+        result = self._run(self.client.step(TextArenaAction(message=guess)))
         full = result.observation.messages[0].content
         feedback = full[len(self._last_full_feedback) :]  # only the new turn
         self._last_full_feedback = full
@@ -83,8 +89,10 @@ class WordleEnv:
 
     def _close(self) -> None:
         try:
-            self._loop.run_until_complete(self.client.close())
+            self._run(self.client.close())
         finally:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=5)
             self._loop.close()
 
 
