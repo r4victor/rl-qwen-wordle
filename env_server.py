@@ -10,6 +10,8 @@ workers can't share them.
 """
 
 import os
+from typing import Any, Optional
+from uuid import uuid4
 
 from openenv.core.env_server.http_server import create_app
 from textarena_env.models import TextArenaAction, TextArenaObservation
@@ -24,6 +26,37 @@ class _ConcurrentTextArenaEnvironment(TextArenaEnvironment):
     # The factory below builds a fresh instance per WebSocket session, so state
     # is isolated — safe to opt into openenv-core's concurrent-session support.
     SUPPORTS_CONCURRENT_SESSIONS = True
+
+    def reset(
+        self, seed: Optional[int] = None, episode_id: Optional[str] = None, **kwargs: Any
+    ) -> TextArenaObservation:
+        # Same as the parent, but forward `seed` to the TextArena env (the parent
+        # drops it). A fixed seed → fixed secret word, so a GRPO group can share
+        # one word and eval is reproducible.
+        env = self._ta_env
+        while hasattr(env, "env"):
+            if hasattr(env, "full_observations"):
+                env.full_observations = {}
+            env = env.env
+        if hasattr(env, "full_observations"):
+            env.full_observations = {}
+
+        self._ta_env.reset(num_players=self.num_players, seed=seed)
+
+        for provider in self._reward_providers:
+            provider.reset()
+        self._state.episode_id = episode_id if episode_id is not None else str(uuid4())
+        self._state.step_count = 0
+        self._state.turn = 0
+        self._state.last_reward = 0.0
+        self._state.last_info = {}
+        self._state.raw_state = self._snapshot_state()
+        self._last_reward_signals = {}
+
+        observation = self._build_observation()
+        observation.reward = 0.0
+        observation.done = False
+        return observation
 
 
 def _make_env() -> TextArenaEnvironment:

@@ -50,8 +50,10 @@ class WordleEnv:
         self._loop = asyncio.new_event_loop()
         self.client = TextArenaEnv(base_url=_ENV_URL)
 
-    def reset(self, **kwargs) -> str | None:
-        result = self._loop.run_until_complete(self.client.reset())
+    def reset(self, seed: int | None = None, **kwargs) -> str | None:
+        # seed pins the secret word — TRL passes the dataset's `seed` column here,
+        # so all rollouts in a GRPO group (same row) get the same word.
+        result = self._loop.run_until_complete(self.client.reset(seed=seed))
         self._last_full_feedback = result.observation.messages[0].content
         self.reward = 0.0
         self.done = False
@@ -107,16 +109,17 @@ GUESS_TOOL = {
 
 
 def play_episode(client, model: str, sampling_kwargs: dict | None = None,
-                 max_turns: int = 12) -> dict:
+                 max_turns: int = 12, seed: int | None = None) -> dict:
     """Play one Wordle episode via OpenAI tool-calling — the format training uses.
 
-    `client` is an openai.OpenAI pointed at the served policy. Returns the
-    fields the eval aggregates over.
+    `client` is an openai.OpenAI pointed at the served policy. `seed` pins the
+    word so baseline and trained runs face identical games. Returns the fields
+    the eval aggregates over.
     """
     sampling_kwargs = sampling_kwargs or {}
     env = WordleEnv()
     try:
-        obs = env.reset()
+        obs = env.reset(seed=seed)
         messages: list = [{"role": "user", "content": f"{SYSTEM_PROMPT}\n\n{obs}"}]
 
         turns = 0

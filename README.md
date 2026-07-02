@@ -7,7 +7,7 @@ A small, self-contained example of **RL-training and evaluating** an LLM
 - **Trainer:** [TRL](https://github.com/huggingface/trl) GRPO (multi-turn, tool-calling)
 - **GPU:** provisioned with [dstack](https://github.com/dstackai/dstack)
 
-Inspired by Prime Intellect's hosted-training example, but does not depend on it.
+Inspired by Prime Intellect's hosted training example but does not depend on it.
 
 ## Files
 
@@ -28,16 +28,18 @@ dstack apply -f train.dstack.yml
 
 Runs the OpenEnv server + GRPO training (vLLM colocate, LoRA) on one GPU. Main
 knobs: `--group-size 8` (completions per prompt), `--batch-size 16`,
-`--steps 10`. Watch **reward** climb via `dstack logs wordle-grpo`.
+`--steps 10`. Watch **reward** climb via `dstack logs wordle-grpo`. When training
+finishes, the run **serves the model and evals baseline vs trained** — the
+numbers print at the end of the log.
 
 The adapter is saved to `outputs/` on the run — which is ephemeral. To keep it
 (and serve it in a separate run), **push it to HF Hub**: set `HF_REPO` and
 `HF_TOKEN` in `train.dstack.yml` and it uploads the adapter when training ends.
 
-## Serve & eval
+## Serve & eval separately
 
-Serving runs separately from training. Serve the base model, or a trained
-adapter pulled from HF, with `serve-vllm.dstack.yml`:
+To eval later (or a model pushed to HF), serve the base model or a trained
+adapter with `serve-vllm.dstack.yml`:
 
 ```bash
 dstack apply -f serve-vllm.dstack.yml                                    # base (baseline)
@@ -56,4 +58,4 @@ uv run eval_wordle.py --base-url http://localhost:8000/v1 --model wordle -n 50
 
 - **Reward:** `1.0` on a win, else `(greens + ½·yellows) / 5` of the last guess (TextArena's own signal).
 - **LoRA** is on by default so 4B + vLLM fit one GPU; pass `--no-lora` for full fine-tuning on a bigger box. LoRA pushes a small *adapter* (serve with `ADAPTER=<repo>`); `--no-lora` pushes a *full model* (serve with `MODEL=<repo>`, no adapter).
-- vLLM must be started with `--enable-auto-tool-choice --tool-call-parser qwen3_xml` for the tool-calling eval (Qwen3.5 uses XML-style tool calls; `hermes` fails to parse them).
+- vLLM must be started with `--enable-auto-tool-choice --tool-call-parser qwen3_xml` for the tool-calling eval (Qwen3.5 uses XML-style tool calls).

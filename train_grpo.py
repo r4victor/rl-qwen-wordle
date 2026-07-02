@@ -19,7 +19,6 @@ import argparse
 
 from datasets import Dataset
 from peft import LoraConfig
-
 from trl import GRPOConfig, GRPOTrainer, RichProgressCallback
 
 # Shared format (prompt + env + guess tool) — identical to what eval_wordle.py uses.
@@ -32,35 +31,72 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--model", default="Qwen/Qwen3.5-4B")
-    p.add_argument("--env-url", default="http://0.0.0.0:8001",
-                   help="Wordle OpenEnv server URL (self-host with run_env_server.sh)")
+    p.add_argument(
+        "--env-url",
+        default="http://0.0.0.0:8001",
+        help="Wordle OpenEnv server URL (self-host with run_env_server.sh)",
+    )
     # --- Sizing knobs ---
-    p.add_argument("--group-size", type=int, default=8,
-                   help="completions per prompt == GRPO num_generations "
-                        "(a.k.a. rollouts_per_example; must be >= 2)")
-    p.add_argument("--batch-size", type=int, default=16,
-                   help="total completions per optimizer step; "
-                        "prompts/step = batch_size / group_size (must divide by group_size)")
+    p.add_argument(
+        "--group-size",
+        type=int,
+        default=8,
+        help="completions per prompt == GRPO num_generations "
+        "(a.k.a. rollouts_per_example; must be >= 2)",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="total completions per optimizer step; "
+        "prompts/step = batch_size / group_size (must divide by group_size)",
+    )
     p.add_argument("--steps", type=int, default=10, help="optimizer steps (max_steps)")
-    p.add_argument("--micro-batch-size", type=int, default=2,
-                   help="completions per forward/backward (GPU-memory knob); "
-                        "must divide batch_size. grad-accum = batch_size / micro_batch")
+    p.add_argument(
+        "--micro-batch-size",
+        type=int,
+        default=2,
+        help="completions per forward/backward (GPU-memory knob); "
+        "must divide batch_size. grad-accum = batch_size / micro_batch",
+    )
     p.add_argument("--learning-rate", type=float, default=1e-5)
-    p.add_argument("--max-completion-length", type=int, default=2048,
-                   help="TOTAL tokens across all turns of an episode, not per turn")
-    p.add_argument("--dataset-size", type=int, default=2000,
-                   help="prompt pool size; --steps caps actual steps")
+    p.add_argument(
+        "--max-completion-length",
+        type=int,
+        default=1024,
+        help="TOTAL tokens across all turns of an episode, not per turn",
+    )
+    p.add_argument(
+        "--dataset-size",
+        type=int,
+        default=2000,
+        help="prompt pool size; --steps caps actual steps",
+    )
     p.add_argument("--vllm-mode", choices=("colocate", "server"), default="colocate")
     p.add_argument("--vllm-server-url", default="http://localhost:8000")
-    p.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.3,
-                   help="colocate shares the GPU with training; keep vLLM's slice small")
-    p.add_argument("--lora", default=True, action=argparse.BooleanOptionalAction,
-                   help="LoRA (default) fits 4B on one GPU; --no-lora for full fine-tune")
-    p.add_argument("--enable-thinking", default=False, action=argparse.BooleanOptionalAction)
+    p.add_argument(
+        "--vllm-gpu-memory-utilization",
+        type=float,
+        default=0.3,
+        help="colocate shares the GPU with training; keep vLLM's slice small",
+    )
+    p.add_argument(
+        "--lora",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="LoRA (default) fits 4B on one GPU; --no-lora for full fine-tune",
+    )
+    p.add_argument(
+        "--enable-thinking", default=False, action=argparse.BooleanOptionalAction
+    )
     p.add_argument("--output-dir", default=None)
     p.add_argument("--report-to", default="none", choices=("none", "trackio", "wandb"))
-    p.add_argument("--push-to-hub", default=None, metavar="REPO_ID",
-                   help="after training, push the adapter to this HF repo (needs HF_TOKEN)")
+    p.add_argument(
+        "--push-to-hub",
+        default=None,
+        metavar="REPO_ID",
+        help="after training, push the adapter to this HF repo (needs HF_TOKEN)",
+    )
     return p.parse_args()
 
 
@@ -77,7 +113,9 @@ def main() -> None:
     # batch_size = per_device_batch * grad_accum (single-GPU). TRL needs it
     # divisible by group_size (full groups) and by micro_batch (memory split).
     if args.group_size < 2:
-        raise SystemExit("--group-size must be >= 2 (GRPO needs >=2 completions per prompt)")
+        raise SystemExit(
+            "--group-size must be >= 2 (GRPO needs >=2 completions per prompt)"
+        )
     if args.batch_size % args.group_size != 0:
         raise SystemExit(
             f"--batch-size ({args.batch_size}) must be divisible by "
@@ -97,23 +135,36 @@ def main() -> None:
     )
 
     # TRL drives WordleEnv's guess() tool over the multi-turn loop automatically.
+    # The per-row `seed` is passed to WordleEnv.reset(); TRL replicates each row
+    # group_size times, so every rollout in a GRPO group plays the same word.
     output_dir = args.output_dir or f"outputs/{args.model.split('/')[-1]}-wordle-GRPO"
     dataset = Dataset.from_dict(
-        {"prompt": [[{"role": "user", "content": SYSTEM_PROMPT}] for _ in range(args.dataset_size)]}
+        {
+            "prompt": [
+                [{"role": "user", "content": SYSTEM_PROMPT}]
+                for _ in range(args.dataset_size)
+            ],
+            "seed": list(range(args.dataset_size)),
+        }
     )
 
     peft_config = None
     if args.lora:
         peft_config = LoraConfig(
-            r=16, lora_alpha=32, lora_dropout=0.05,
-            target_modules="all-linear", task_type="CAUSAL_LM",
+            r=16,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            target_modules="all-linear",
+            task_type="CAUSAL_LM",
         )
 
     config = GRPOConfig(
         output_dir=output_dir,
         use_vllm=True,
         vllm_mode=args.vllm_mode,
-        vllm_server_base_url=args.vllm_server_url if args.vllm_mode == "server" else None,
+        vllm_server_base_url=args.vllm_server_url
+        if args.vllm_mode == "server"
+        else None,
         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
         num_generations=args.group_size,
         per_device_train_batch_size=args.micro_batch_size,

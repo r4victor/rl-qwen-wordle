@@ -2,9 +2,8 @@
 #
 #   dstack apply -f train.dstack.yml
 #
-# One node runs two processes: the Wordle OpenEnv server (CPU) in the
-# background, and GRPO training with vLLM colocate on the GPU. Everything is
-# local to the node, so there is no hosted-Space dependency.
+# One node runs: the Wordle OpenEnv server (CPU, background), GRPO training
+# (vLLM colocate, GPU), then a post-training eval (baseline vs trained).
 
 type: task
 name: wordle-grpo
@@ -14,24 +13,25 @@ nvcc: true # some deps build CUDA extensions
 
 env:
   - MODEL=Qwen/Qwen3.5-4B
-  - HF_HUB_ENABLE_HF_TRANSFER=1
+  - HF_XET_HIGH_PERFORMANCE=1 # faster Hub transfers via the Xet backend
   # Env-server concurrency must cover the generation batch (--batch-size below).
   - MAX_CONCURRENT_ENVS=64
   # Set HF_REPO (+ HF_TOKEN as a secret) to push the trained adapter to HF Hub,
   # so it can be served in a separate run (see serve-vllm.dstack.yml).
-  - HF_REPO=r4victor/qwen-wordle
-  # - HF_TOKEN
+  - HF_REPO
+  - HF_TOKEN
 
 files:
   - train_grpo.py
   - wordle_env.py
   - env_server.py
+  - eval_wordle.py
   - run_env_server.sh
 
 commands:
   # Plain pip installs into the run's own env (default dstack image); list
   # datasets/vllm explicitly rather than relying on trl's transitive deps.
-  - uv pip install "trl==1.7.0" vllm datasets accelerate peft trackio hf_transfer
+  - uv pip install "trl==1.7.0" vllm datasets accelerate peft trackio openai
     "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle"
   # 1. Wordle OpenEnv server in the background.
   - bash run_env_server.sh &
@@ -45,9 +45,24 @@ commands:
   - |
     [ -n "$HF_REPO" ] && PUSH="--push-to-hub $HF_REPO" || PUSH=""
     python train_grpo.py --model $MODEL --env-url http://0.0.0.0:8001 \
-      --vllm-mode colocate --group-size 8 --batch-size 64 --steps 20 $PUSH
+      --vllm-mode colocate --group-size 8 --micro-batch-size 4 --batch-size 32 --steps 3 $PUSH
+  # 4. Training freed the GPU — serve base + trained adapter (one vLLM serves
+  #    both) and eval baseline vs trained in the same tool-calling format.
+  - |
+    ADAPTER_DIR="outputs/$(basename $MODEL)-wordle-GRPO"
+    vllm serve $MODEL --host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.90 \
+      --enable-auto-tool-choice --tool-call-parser qwen3_xml \
+      --enable-lora --lora-modules wordle=$ADAPTER_DIR --max-lora-rank 16 > /tmp/vllm.log 2>&1 &
+    for i in $(seq 1 120); do
+      curl -sf http://0.0.0.0:8000/health && break
+      echo "waiting for vllm ($i)..."; sleep 5
+    done
+    python eval_wordle.py --base-url http://localhost:8000/v1 --model $MODEL  -n 50  # baseline
+    python eval_wordle.py --base-url http://localhost:8000/v1 --model wordle -n 50  # trained
 
 resources:
   # 4B + LoRA + colocated vLLM fits one 48 GB card; 80 GB is comfortable.
   gpu: 48GB..80GB:1
   disk: 100GB
+
+idle_duration: 1h

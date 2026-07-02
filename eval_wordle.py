@@ -80,8 +80,11 @@ def main() -> None:
     print(f"Model    : {args.model}   (tool-calling, same format as training)")
     print(f"Games    : {args.num_examples} x {args.rollouts_per_example} = {total}\n")
 
-    def run_one(_):
-        return play_episode(client, args.model, sampling, max_turns=args.max_turns)
+    # Seed by example index so the -r replays of an example share a word, and
+    # baseline vs trained runs face identical words (paired comparison).
+    def run_one(i):
+        seed = i // args.rollouts_per_example
+        return play_episode(client, args.model, sampling, max_turns=args.max_turns, seed=seed)
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         results = list(pool.map(run_one, range(total)))
