@@ -75,13 +75,13 @@ class WordleEnv:
             self.client.step(TextArenaAction(message=guess))
         )
         full = result.observation.messages[0].content
-        feedback = full[len(self._last_full_feedback):]  # only the new turn
+        feedback = full[len(self._last_full_feedback) :]  # only the new turn
         self._last_full_feedback = full
         self.reward = result.reward  # raw TextArena reward, same on both sides
         self.done = result.done
         return feedback
 
-    def close(self) -> None:
+    def _close(self) -> None:
         try:
             self._loop.run_until_complete(self.client.close())
         finally:
@@ -108,8 +108,13 @@ GUESS_TOOL = {
 }
 
 
-def play_episode(client, model: str, sampling_kwargs: dict | None = None,
-                 max_turns: int = 12, seed: int | None = None) -> dict:
+def play_episode(
+    client,
+    model: str,
+    sampling_kwargs: dict | None = None,
+    max_turns: int = 12,
+    seed: int | None = None,
+) -> dict:
     """Play one Wordle episode via OpenAI tool-calling — the format training uses.
 
     `client` is an openai.OpenAI pointed at the served policy. `seed` pins the
@@ -144,6 +149,10 @@ def play_episode(client, model: str, sampling_kwargs: dict | None = None,
                 )
             turns += 1
 
-        return {"reward": float(env.reward), "solved": env.reward >= 1.0, "turns": turns}
+        return {
+            "reward": float(env.reward),
+            "solved": env.reward >= 1.0,
+            "turns": turns,
+        }
     finally:
-        env.close()  # release the OpenEnv session (frees a concurrency slot)
+        env._close()  # release the OpenEnv session (frees a concurrency slot)

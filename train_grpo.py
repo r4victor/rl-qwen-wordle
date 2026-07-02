@@ -67,6 +67,13 @@ def parse_args() -> argparse.Namespace:
         help="TOTAL tokens across all turns of an episode, not per turn",
     )
     p.add_argument(
+        "--vllm-max-model-len",
+        type=int,
+        default=8192,
+        help="vLLM context window (prompt+completion). The model default "
+        "(262k for Qwen3.5) demands a huge KV cache that won't fit in colocate.",
+    )
+    p.add_argument(
         "--dataset-size",
         type=int,
         default=2000,
@@ -166,6 +173,7 @@ def main() -> None:
         if args.vllm_mode == "server"
         else None,
         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+        vllm_max_model_length=args.vllm_max_model_len,
         num_generations=args.group_size,
         per_device_train_batch_size=args.micro_batch_size,
         gradient_accumulation_steps=grad_accum,
@@ -173,6 +181,9 @@ def main() -> None:
         learning_rate=args.learning_rate,
         max_completion_length=args.max_completion_length,
         chat_template_kwargs={"enable_thinking": args.enable_thinking},
+        # Trade compute for memory — cuts activation memory (helps fit on one GPU).
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         # Log reward/kl/loss + sample games to stdout every step.
         log_completions=True,
         num_completions_to_print=2,

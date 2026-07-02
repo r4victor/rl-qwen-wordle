@@ -17,6 +17,7 @@ env:
   - HF_XET_HIGH_PERFORMANCE=1 # faster Hub transfers via the Xet backend
   # Env-server concurrency must cover the generation batch (--batch-size below).
   - MAX_CONCURRENT_ENVS=64
+  - TRL_EXPERIMENTAL_SILENCE=1
   # Set HF_REPO (+ HF_TOKEN as a secret) to push the trained adapter to HF Hub,
   # so it can be served in a separate run (see serve-vllm.dstack.yml).
   - HF_REPO
@@ -36,9 +37,11 @@ commands:
   #  - --torch-backend=cu129: cu129 torch (provides libcudart.so.12)
   #  - vllm 0.23.0 is TRL 1.7.0's max; transformers>=5.6.0 has the `qwen3_5` arch
   #  (x86_64 node assumed — swap to the aarch64 wheel on ARM)
+  # flash-linear-attention gives Qwen3.5's GDN layers an efficient (Triton) path;
+  # without it transformers falls back to a memory-hungry torch implementation.
   - uv pip install --torch-backend=cu129
     "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
-    "trl==1.7.0" "transformers>=5.6.0"
+    "trl==1.7.0" "transformers>=5.6.0" flash-linear-attention
     datasets accelerate peft trackio openai
     "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle"
   # 1. Wordle OpenEnv server in the background.
@@ -59,6 +62,7 @@ commands:
   - |
     ADAPTER_DIR="outputs/$(basename $MODEL)-wordle-GRPO"
     vllm serve $MODEL --host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.90 \
+      --max-model-len 8192 \
       --enable-auto-tool-choice --tool-call-parser qwen3_xml \
       --enable-lora --lora-modules wordle=$ADAPTER_DIR --max-lora-rank 16 > /tmp/vllm.log 2>&1 &
     for i in $(seq 1 120); do
@@ -69,8 +73,8 @@ commands:
     python eval_wordle.py --base-url http://localhost:8000/v1 --model wordle -n 50  # trained
 
 resources:
-  # 4B + LoRA + colocated vLLM fits one 48 GB card; 80 GB is comfortable.
-  gpu: 48GB..80GB:1
-  disk: 100GB
+  # 4B + LoRA + colocated vLLM fits tightly one 48 GB card; 80 GB is comfortable.
+  gpu: 80GB:1
+  disk: 200GB
 
 idle_duration: 1h
