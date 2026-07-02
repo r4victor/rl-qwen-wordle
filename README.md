@@ -7,8 +7,6 @@ A small, self-contained example of **RL-training and evaluating** an LLM
 - **Trainer:** [TRL](https://github.com/huggingface/trl) GRPO (multi-turn, tool-calling)
 - **GPU:** provisioned with [dstack](https://github.com/dstackai/dstack)
 
-Inspired by Prime Intellect's hosted training example but does not depend on it.
-
 ## Files
 
 | File | What it is |

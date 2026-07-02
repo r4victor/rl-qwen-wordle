@@ -137,9 +137,15 @@ def play_episode(
 
         turns = 0
         while not env.done and turns < max_turns:
-            resp = client.chat.completions.create(
-                model=model, messages=messages, tools=[GUESS_TOOL], **sampling_kwargs
-            )
+            try:
+                resp = client.chat.completions.create(
+                    model=model, messages=messages, tools=[GUESS_TOOL], **sampling_kwargs
+                )
+            except Exception:
+                # A misbehaving policy can emit a malformed tool call that the
+                # server later rejects (400). End the episode and score it as-is
+                # rather than crashing the whole eval.
+                break
             msg = resp.choices[0].message
             messages.append(msg)  # assistant turn (may carry tool_calls)
             if not msg.tool_calls:

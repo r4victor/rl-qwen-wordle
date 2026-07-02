@@ -14,7 +14,7 @@ python: "3.12"
 
 env:
   - MODEL=Qwen/Qwen3.5-4B
-  - LORA=true # set to false for full fine-tuning (uses 8-bit Adam to fit 80GB)
+  - LORA=false # set to false for full fine-tuning (uses 8-bit Adam to fit 80GB)
   - HF_XET_HIGH_PERFORMANCE=1 # faster Hub transfers via the Xet backend
   # Env-server concurrency must cover the generation batch (--batch-size below).
   - MAX_CONCURRENT_ENVS=64
@@ -46,9 +46,12 @@ commands:
   #    explicit +cu129 wheel is the CUDA-12.9 build that matches cu129 torch
   #  - --torch-backend=cu129: cu129 torch (provides libcudart.so.12)
   #  - vllm 0.23.0 is TRL 1.7.0's max; transformers>=5.6.0 has the `qwen3_5` arch
+  #  - flash-linear-attention: efficient (Triton/tilelang) kernels for Qwen3.5's
+  #    GDN layers — much less activation memory + faster than the torch fallback.
+  #    Its tilelang JIT-compiles CUDA, so it needs the cuda-toolkit installed above.
   - uv pip install --torch-backend=cu129
     "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.23.0/vllm-0.23.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
-    "trl==1.7.0" "transformers>=5.6.0"
+    "trl==1.7.0" "transformers>=5.6.0" flash-linear-attention
     datasets accelerate peft trackio openai wandb bitsandbytes
     "openenv-textarena @ git+https://huggingface.co/spaces/openenv/wordle"
   # 1. Wordle OpenEnv server in the background.
@@ -62,10 +65,16 @@ commands:
   # 3. GRPO training (vLLM colocate). --no-lora when LORA=false. Push if HF_REPO set.
   - |
     [ -n "$HF_REPO" ] && PUSH="--push-to-hub $HF_REPO" || PUSH=""
-    [ "$LORA" = "false" ] && LORA_FLAG="--no-lora" || LORA_FLAG=""
+    # Full FT needs a tighter memory budget than LoRA: smaller micro-batch (GDN's
+    # torch fallback makes activations heavy) and a smaller vLLM slice.
+    if [ "$LORA" = "false" ]; then
+      MODE="--no-lora --micro-batch-size 4 --vllm-gpu-memory-utilization 0.15"
+    else
+      MODE="--micro-batch-size 4"
+    fi
     python train_grpo.py --model $MODEL --env-url http://0.0.0.0:8001 \
-      --vllm-mode colocate --group-size 8 --micro-batch-size 4 --batch-size 32 --steps 20 \
-      $LORA_FLAG --report-to wandb $PUSH
+      --vllm-mode colocate --group-size 8 --batch-size 32 --steps 30 \
+      $MODE --report-to wandb $PUSH
   # 4. Training freed the GPU — serve the model(s) and eval baseline vs trained.
   #    LoRA: one server hosts base + adapter. Full FT: the checkpoint is a full
   #    model, so serve base and trained separately.
