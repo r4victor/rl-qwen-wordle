@@ -113,26 +113,46 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--enable-thinking", default=False, action=argparse.BooleanOptionalAction
     )
+    p.add_argument(
+        "--game-over-penalty",
+        type=float,
+        default=0.1,
+        help="reward subtracted per guess made AFTER the game ended, to teach the "
+        "model to stop calling guess() on 'Game over' (total penalty capped at 1.0)",
+    )
+    p.add_argument(
+        "--valid-bonus",
+        type=float,
+        default=0.05,
+        help="reward ADDED per valid guess, to encourage the model to commit to "
+        "guesses (a carrot) rather than stall/over-think to avoid a penalty",
+    )
     p.add_argument("--output-dir", default=None)
     p.add_argument("--report-to", default="none", choices=("none", "trackio", "wandb"))
     p.add_argument(
         "--push-to-hub",
         default=None,
         metavar="REPO_ID",
-        help="after training, push the adapter to this HF repo (needs HF_TOKEN)",
+        help="after training, push to HF (needs HF_TOKEN). A `-lora`/`-full` "
+        "suffix is appended so the two modes never share a repo.",
     )
     return p.parse_args()
-
-
-def reward_func(environments, **kwargs) -> list[float]:
-    # Raw TextArena reward, identical to the eval script: 1.0 on win, else a
-    # partial score from the last guess -- (greens + 0.5*yellows) / word_length.
-    return [env.reward for env in environments]
 
 
 def main() -> None:
     args = parse_args()
     set_env_url(args.env_url)  # WordleEnv (from wordle_env) reads this
+
+    def reward_func(environments, **kwargs) -> list[float]:
+        # Raw TextArena reward (1.0 win, else partial letter-match of the last
+        # valid guess), PLUS a bonus per valid guess (encourage committing to
+        # guesses), MINUS a capped penalty for guesses after "Game over".
+        return [
+            env.reward
+            + args.valid_bonus * env.valid_guesses
+            - min(args.game_over_penalty * env.wasted_guesses, 1.0)
+            for env in environments
+        ]
 
     # batch_size = per_device_batch * grad_accum (single-GPU). TRL needs it
     # divisible by group_size (full groups) and by micro_batch (memory split).
@@ -186,8 +206,12 @@ def main() -> None:
     # huge, so default to 8-bit Adam so a 4B full FT fits one 80GB GPU. Overridable.
     optim = args.optim or ("adamw_torch" if args.lora else "adamw_bnb_8bit")
     lr = args.learning_rate or (1e-5 if args.lora else 1e-6)
+    # Push LoRA and full-FT runs to SEPARATE repos: an adapter and a full model
+    # must not share one repo (the mixed files make loading ambiguous).
+    hub_repo = args.push_to_hub and args.push_to_hub + ("-lora" if args.lora else "-full")
     print(
-        f"[mode] {'LoRA r=%d' % args.lora_rank if args.lora else 'full fine-tune'}  optim={optim}  lr={lr}"
+        f"[mode] {'LoRA r=%d' % args.lora_rank if args.lora else 'full fine-tune'}"
+        f"  optim={optim}  lr={lr}  hub_repo={hub_repo or '(none)'}"
     )
 
     config = GRPOConfig(
@@ -215,7 +239,7 @@ def main() -> None:
         num_completions_to_print=2,
         logging_steps=1,
         report_to=args.report_to,
-        hub_model_id=args.push_to_hub,
+        hub_model_id=hub_repo,
     )
 
     trainer = GRPOTrainer(
@@ -229,8 +253,8 @@ def main() -> None:
     )
     trainer.train()
     trainer.save_model(output_dir)
-    if args.push_to_hub:
-        trainer.push_to_hub()  # uploads the adapter to hub_model_id
+    if hub_repo:
+        trainer.push_to_hub()  # -> <HF_REPO>-lora or <HF_REPO>-full
 
 
 if __name__ == "__main__":

@@ -68,12 +68,13 @@ commands:
     # Full FT needs a tighter memory budget than LoRA: smaller micro-batch (GDN's
     # torch fallback makes activations heavy) and a smaller vLLM slice.
     if [ "$LORA" = "false" ]; then
-      MODE="--no-lora --micro-batch-size 4 --vllm-gpu-memory-utilization 0.15"
+      MODE="--no-lora --micro-batch-size 2 --vllm-gpu-memory-utilization 0.15"
     else
       MODE="--micro-batch-size 4"
     fi
     python train_grpo.py --model $MODEL --env-url http://0.0.0.0:8001 \
       --vllm-mode colocate --group-size 8 --batch-size 32 --steps 30 \
+      --enable-thinking --max-completion-length 2048 \
       $MODE --report-to wandb $PUSH
   # 4. Training freed the GPU — serve the model(s) and eval baseline vs trained.
   #    LoRA: one server hosts base + adapter. Full FT: the checkpoint is a full
@@ -82,6 +83,8 @@ commands:
     CKPT="outputs/$(basename $MODEL)-wordle-GRPO"
     # --enforce-eager: skip CUDA-graph compile (fast startup for a short eval).
     SERVE="--host 0.0.0.0 --port 8000 --gpu-memory-utilization 0.90 --max-model-len 8192 --enforce-eager --enable-auto-tool-choice --tool-call-parser qwen3_xml"
+    # --enable-thinking so eval matches training (thinking on in both).
+    EVAL="--base-url http://localhost:8000/v1 --enable-thinking -n 50"
     wait_vllm () {
       for i in $(seq 1 120); do
         curl -sf http://0.0.0.0:8000/health && return 0

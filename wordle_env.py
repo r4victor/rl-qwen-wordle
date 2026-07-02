@@ -65,6 +65,9 @@ class WordleEnv:
         self._last_full_feedback = result.observation.messages[0].content
         self.reward = 0.0
         self.done = False
+        self.wasted_guesses = 0  # guess() calls after the game ended (post "Game over")
+        self.valid_guesses = 0  # accepted guesses (valid word, right format) — rewarded
+        self.invalid_guesses = 0  # rejected guesses (kept for logging; not penalized)
         return self._last_full_feedback
 
     def guess(self, guess: str) -> str:
@@ -78,11 +81,16 @@ class WordleEnv:
             The feedback message from the environment.
         """
         if self.done:
+            self.wasted_guesses += 1
             raise ValueError("Game over.")
         result = self._run(self.client.step(TextArenaAction(message=guess)))
         full = result.observation.messages[0].content
         feedback = full[len(self._last_full_feedback) :]  # only the new turn
         self._last_full_feedback = full
+        if "invalid move" in feedback.lower():  # not a valid word / wrong format
+            self.invalid_guesses += 1
+        else:  # accepted guess — the behavior we want to encourage
+            self.valid_guesses += 1
         self.reward = result.reward  # raw TextArena reward, same on both sides
         self.done = result.done
         return feedback
@@ -139,7 +147,10 @@ def play_episode(
         while not env.done and turns < max_turns:
             try:
                 resp = client.chat.completions.create(
-                    model=model, messages=messages, tools=[GUESS_TOOL], **sampling_kwargs
+                    model=model,
+                    messages=messages,
+                    tools=[GUESS_TOOL],
+                    **sampling_kwargs,
                 )
             except Exception:
                 # A misbehaving policy can emit a malformed tool call that the
