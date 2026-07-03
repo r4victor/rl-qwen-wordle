@@ -10,6 +10,8 @@ Implements both LoRA and full training.
 
 ## Results
 
+Trained LoRA model: https://huggingface.co/r4victor/qwen-wordle-lora
+
 * Baseline Qwen3.5-4B with thinking enabled and 1024 tokens/turn scores **15-20%** win rate.
 * A LoRA training (batch_size=32, steps=~30) improves win rate up to **30%** but increasing the number of steps doesn't help much.
 * A full training (batch_size=32, steps=~30) shows the same improvement but continues to improve with the number of steps. (Haven't measured >40 steps).
