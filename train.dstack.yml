@@ -68,17 +68,17 @@ commands:
     # Full FT needs a tighter memory budget than LoRA: smaller micro-batch (GDN's
     # torch fallback makes activations heavy) and a smaller vLLM slice.
     if [ "$LORA" = "false" ]; then
-      MODE="--no-lora --micro-batch-size 2 --vllm-gpu-memory-utilization 0.15"
+      MODE="--no-lora --micro-batch-size 1 --vllm-gpu-memory-utilization 0.15"
     else
-      MODE="--micro-batch-size 4"
+      MODE="--micro-batch-size 4 --vllm-gpu-memory-utilization 0.15"
     fi
     python train_grpo.py --model $MODEL --env-url http://0.0.0.0:8001 \
-      --vllm-mode colocate --group-size 8 --batch-size 32 --steps 30 \
+      --vllm-mode colocate --group-size 8 --batch-size 32 --steps 40 \
       --enable-thinking --max-completion-length 2048 \
       $MODE --report-to wandb $PUSH
-  # 4. Training freed the GPU — serve the model(s) and eval baseline vs trained.
-  #    LoRA: one server hosts base + adapter. Full FT: the checkpoint is a full
-  #    model, so serve base and trained separately.
+  # 4. Training freed the GPU — serve the trained model and eval it.
+  #    LoRA: server hosts base + adapter (served as "wordle"). Full FT: the
+  #    checkpoint is a full model, served directly.
   - |
     CKPT="outputs/$(basename $MODEL)-wordle-GRPO"
     # --enforce-eager: skip CUDA-graph compile (fast startup for a short eval).
@@ -94,17 +94,13 @@ commands:
       return 1
     }
     if [ "$LORA" = "false" ]; then
-      for M in "$MODEL" "$CKPT"; do    # baseline, then trained (both full models)
-        vllm serve "$M" $SERVE > /tmp/vllm.log 2>&1 & PID=$!
-        wait_vllm $PID || exit 1
-        python eval_wordle.py --base-url http://localhost:8000/v1 --model "$M" -n 50
-        kill $PID 2>/dev/null; wait $PID 2>/dev/null
-      done
+      vllm serve "$CKPT" $SERVE > /tmp/vllm.log 2>&1 & PID=$!
+      wait_vllm $PID || exit 1
+      python eval_wordle.py $EVAL --model "$CKPT"
     else
       vllm serve "$MODEL" $SERVE --enable-lora --lora-modules wordle="$CKPT" --max-lora-rank 16 > /tmp/vllm.log 2>&1 & PID=$!
       wait_vllm $PID || exit 1
-      python eval_wordle.py --base-url http://localhost:8000/v1 --model "$MODEL" -n 50  # baseline
-      python eval_wordle.py --base-url http://localhost:8000/v1 --model wordle   -n 50  # trained
+      python eval_wordle.py $EVAL --model wordle
     fi
 
 resources:
@@ -113,3 +109,4 @@ resources:
   disk: 200GB
 
 idle_duration: 1h
+max_price: 4

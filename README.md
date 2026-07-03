@@ -27,8 +27,8 @@ dstack apply -f train.dstack.yml
 Runs the OpenEnv server + GRPO training (vLLM colocate, LoRA) on one GPU. Main
 knobs: `--group-size 8` (completions per prompt), `--batch-size 16`,
 `--steps 10`. Watch **reward** climb via `dstack logs wordle-grpo`. When training
-finishes, the run **serves the model and evals baseline vs trained** — the
-numbers print at the end of the log.
+finishes, the run **serves and evals the trained model** — the numbers print at
+the end of the log.
 
 The adapter is saved to `outputs/` on the run — which is ephemeral. To keep it
 (and serve it in a separate run), **push it to HF Hub**: set `HF_REPO` and
