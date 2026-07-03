@@ -8,8 +8,7 @@
 type: task
 name: wordle-grpo
 
-# dstack base image. We ignore its CUDA/nvcc — torch and vLLM wheels bundle their
-# own CUDA 12.9 runtime (the host driver just needs to support CUDA >=12.9).
+# dstack base image. We ignore its CUDA/nvcc — torch and vLLM wheels bundle their own CUDA 12.9 runtime.
 python: "3.12"
 
 env:
